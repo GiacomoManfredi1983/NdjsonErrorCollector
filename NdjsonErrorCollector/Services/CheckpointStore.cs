@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
+using NdjsonErrorCollector;
 using NdjsonErrorCollector.Models;
 
 namespace NdjsonErrorCollector.Services
@@ -31,7 +32,7 @@ namespace NdjsonErrorCollector.Services
 
             try
             {
-                var checkpoints = JsonSerializer.Deserialize<Dictionary<string, FileCheckpoint>>(json);
+                var checkpoints = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.DictionaryStringFileCheckpoint);
                 return checkpoints ?? new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
             }
             catch (JsonException)
@@ -42,10 +43,7 @@ namespace NdjsonErrorCollector.Services
 
         public void Save(IDictionary<string, FileCheckpoint> checkpoints)
         {
-            var json = JsonSerializer.Serialize(checkpoints, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
+            var json = JsonSerializer.Serialize(checkpoints, AppJsonSerializerContextIndented.Default.DictionaryStringFileCheckpoint);
 
             var tempFilePath = _checkpointFilePath + ".tmp";
             File.WriteAllText(tempFilePath, json);

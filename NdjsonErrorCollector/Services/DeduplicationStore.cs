@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using NdjsonErrorCollector;
 using NdjsonErrorCollector.Models;
 
 namespace NdjsonErrorCollector.Services
@@ -29,7 +30,7 @@ namespace NdjsonErrorCollector.Services
 
             try
             {
-                return JsonSerializer.Deserialize<DeduplicationState>(json) ?? new DeduplicationState();
+                return JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.DeduplicationState) ?? new DeduplicationState();
             }
             catch (JsonException)
             {
@@ -39,10 +40,7 @@ namespace NdjsonErrorCollector.Services
 
         public void Save(DeduplicationState state)
         {
-            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions
-            {
-                WriteIndented = true
-            });
+            var json = JsonSerializer.Serialize(state, AppJsonSerializerContextIndented.Default.DeduplicationState);
 
             var tempFilePath = _filePath + ".tmp";
             File.WriteAllText(tempFilePath, json);
