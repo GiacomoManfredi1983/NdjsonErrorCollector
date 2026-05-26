@@ -43,8 +43,7 @@ namespace NdjsonErrorCollector.Services
                 record.Stack
             }.Select(value => NormalizeWhitespace(value) ?? string.Empty));
 
-            using var sha256 = SHA256.Create();
-            var hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(keyPayload));
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(keyPayload));
             return BitConverter.ToString(hash).Replace("-", string.Empty).ToLowerInvariant();
         }
 
