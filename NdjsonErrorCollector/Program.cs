@@ -13,8 +13,10 @@ namespace NdjsonErrorCollector
         {
             string currentFilePath = null;
             string currentFolderPath = null;
-            var configuration = BuildConfiguration();
+            var releaseRoot = ResolveReleaseRoot();
+            var configuration = BuildConfiguration(releaseRoot);
             var settings = configuration.GetSection("Collector").Get<CollectorOptions>();
+            NormalizeCollectorPaths(settings, releaseRoot);
             var handler = new HttpClientHandler
             {
                 UseDefaultCredentials = true
@@ -127,13 +129,61 @@ namespace NdjsonErrorCollector
             return 0;
         }
 
-        private static IConfiguration BuildConfiguration()
+        private static IConfiguration BuildConfiguration(string releaseRoot)
         {
+            var configurationDirectory = Path.Combine(releaseRoot, "configuration");
+            var configurationPath = Path.Combine(configurationDirectory, "appsettings.json");
+            var basePath = File.Exists(configurationPath)
+                ? configurationDirectory
+                : Directory.GetCurrentDirectory();
+            var settingsFileName = File.Exists(configurationPath)
+                ? "appsettings.json"
+                : "appsettings.json";
+
             return new ConfigurationBuilder()
-                .SetBasePath(Directory.GetCurrentDirectory())
-                .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+                .SetBasePath(basePath)
+                .AddJsonFile(settingsFileName, optional: false, reloadOnChange: false)
                 .AddEnvironmentVariables(prefix: "NDJSONCOLLECTOR_")
                 .Build();
+        }
+
+        private static string ResolveReleaseRoot()
+        {
+            var currentDirectory = Directory.GetCurrentDirectory();
+            var directoryInfo = new DirectoryInfo(currentDirectory);
+
+            if (directoryInfo.Name.Equals("programs", StringComparison.OrdinalIgnoreCase) && directoryInfo.Parent != null)
+            {
+                return directoryInfo.Parent.FullName;
+            }
+
+            return currentDirectory;
+        }
+
+        private static void NormalizeCollectorPaths(CollectorOptions settings, string releaseRoot)
+        {
+            if (settings == null)
+            {
+                return;
+            }
+
+            settings.OutputNdjsonPath = ResolveAgainstReleaseRoot(settings.OutputNdjsonPath, releaseRoot);
+            settings.StateDirectory = ResolveAgainstReleaseRoot(settings.StateDirectory, releaseRoot);
+
+            if (settings.Email != null)
+            {
+                settings.Email.PickupDirectory = ResolveAgainstReleaseRoot(settings.Email.PickupDirectory, releaseRoot);
+            }
+        }
+
+        private static string ResolveAgainstReleaseRoot(string path, string releaseRoot)
+        {
+            if (string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path))
+            {
+                return path;
+            }
+
+            return Path.GetFullPath(Path.Combine(releaseRoot, path));
         }
     }
 

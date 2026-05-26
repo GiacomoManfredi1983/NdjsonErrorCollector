@@ -33,6 +33,24 @@ Settings are stored in `appsettings.json` under `Collector`. For public reposito
 
 Environment overrides are supported with the `NDJSONCOLLECTOR_` prefix.
 
+## Release folder layout
+
+The published release can be arranged as:
+
+- `NdjsonErrorCollector\programs\` - executable and runtime files
+- `NdjsonErrorCollector\data\` - output and persisted state
+- `NdjsonErrorCollector\configuration\appsettings.json` - runtime configuration
+
+When the collector is launched from `programs`, it automatically loads configuration from the sibling `configuration` folder and resolves relative `data` paths from the `NdjsonErrorCollector` release root.
+
+### Packaging script
+
+You can generate this layout with:
+
+- `powershell -ExecutionPolicy Bypass -File .\scripts\package-release.ps1`
+
+The script publishes the app to `artifacts\NdjsonErrorCollector`, creates the `programs` and `data` folders, and moves runtime files into `programs` while keeping `configuration\appsettings.json` at the release root.
+
 ### Example server metadata shape
 
 The collector expects a JSON payload that contains one or more `db` values anywhere in the document. Example:

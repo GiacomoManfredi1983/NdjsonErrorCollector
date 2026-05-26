@@ -483,5 +483,13 @@ namespace NdjsonErrorCollector.Tests
             Assert.Equal(2, options.Cc.Length);
             Assert.False(options.UseSsl);
         }
+
+        [Fact]
+        public void AppSettings_IsPublishedUnderConfigurationFolder()
+        {
+            var projectFile = File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "NdjsonErrorCollector", "NdjsonErrorCollector.csproj"));
+
+            Assert.Contains("<TargetPath>configuration\\appsettings.json</TargetPath>", projectFile);
+        }
     }
 }
