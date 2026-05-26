@@ -22,10 +22,14 @@ Settings are stored in `appsettings.json` under `Collector`. For public reposito
 - `OutputNdjsonPath`: output file containing unique normalized errors
 - `StateDirectory`: local folder for checkpoints, deduplication state, and run log
 - `ErrorChannel`: channel filter, default `SERVICE_ERROR`
-- `Email.From`: sender address
-- `Email.To`: recipient address
+- `Email.Host`: SMTP relay host
+- `Email.Port`: SMTP relay port
+- `Email.FromAddress`: sender address
+- `Email.To`: recipient addresses
+- `Email.Cc`: CC recipient addresses
+- `Email.UseSsl`: whether SMTP should use SSL/TLS
 - `Email.SubjectPrefix`: subject prefix for aggregated notifications
-- `Email.PickupDirectory`: local pickup folder used by the current mail integration
+- `Email.PickupDirectory`: legacy pickup folder setting, no longer used by SMTP delivery
 
 Environment overrides are supported with the `NDJSONCOLLECTOR_` prefix.
 

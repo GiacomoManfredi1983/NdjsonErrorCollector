@@ -22,7 +22,19 @@ namespace NdjsonErrorCollector.Services
             }
 
             var json = File.ReadAllText(_filePath);
-            return JsonSerializer.Deserialize<DeduplicationState>(json) ?? new DeduplicationState();
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new DeduplicationState();
+            }
+
+            try
+            {
+                return JsonSerializer.Deserialize<DeduplicationState>(json) ?? new DeduplicationState();
+            }
+            catch (JsonException)
+            {
+                return new DeduplicationState();
+            }
         }
 
         public void Save(DeduplicationState state)
@@ -32,7 +44,9 @@ namespace NdjsonErrorCollector.Services
                 WriteIndented = true
             });
 
-            File.WriteAllText(_filePath, json);
+            var tempFilePath = _filePath + ".tmp";
+            File.WriteAllText(tempFilePath, json);
+            File.Move(tempFilePath, _filePath, overwrite: true);
         }
     }
 }

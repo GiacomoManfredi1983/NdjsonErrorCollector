@@ -22,7 +22,11 @@ namespace NdjsonErrorCollector.Services
 
                 try
                 {
-                    foreach (var filePath in Directory.EnumerateFiles(location.LogFolderPath, searchPattern ?? "*.log", SearchOption.TopDirectoryOnly))
+                    diagnostics?.Info($"Scanning log folder: {location.LogFolderPath}");
+                    var filePaths = Directory.EnumerateFiles(location.LogFolderPath, searchPattern ?? "*.log", SearchOption.TopDirectoryOnly).ToList();
+                    diagnostics?.Info($"Found {filePaths.Count} log files in folder: {location.LogFolderPath}");
+
+                    foreach (var filePath in filePaths)
                     {
                         var fileInfo = new FileInfo(filePath);
                         results.Add(new SourceLogFile

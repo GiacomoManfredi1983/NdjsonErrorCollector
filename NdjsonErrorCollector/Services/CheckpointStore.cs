@@ -24,8 +24,20 @@ namespace NdjsonErrorCollector.Services
             }
 
             var json = File.ReadAllText(_checkpointFilePath);
-            var checkpoints = JsonSerializer.Deserialize<Dictionary<string, FileCheckpoint>>(json);
-            return checkpoints ?? new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+            }
+
+            try
+            {
+                var checkpoints = JsonSerializer.Deserialize<Dictionary<string, FileCheckpoint>>(json);
+                return checkpoints ?? new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+            }
+            catch (JsonException)
+            {
+                return new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+            }
         }
 
         public void Save(IDictionary<string, FileCheckpoint> checkpoints)
@@ -35,7 +47,9 @@ namespace NdjsonErrorCollector.Services
                 WriteIndented = true
             });
 
-            File.WriteAllText(_checkpointFilePath, json);
+            var tempFilePath = _checkpointFilePath + ".tmp";
+            File.WriteAllText(tempFilePath, json);
+            File.Move(tempFilePath, _checkpointFilePath, overwrite: true);
         }
     }
 }

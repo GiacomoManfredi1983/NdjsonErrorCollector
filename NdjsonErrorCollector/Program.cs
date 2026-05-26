@@ -11,13 +11,20 @@ namespace NdjsonErrorCollector
     {
         static int Main(string[] args)
         {
+            string currentFilePath = null;
+            string currentFolderPath = null;
             var configuration = BuildConfiguration();
             var settings = configuration.GetSection("Collector").Get<CollectorOptions>();
-            var discoveryService = new ServerDiscoveryService(new HttpClient());
+            var handler = new HttpClientHandler
+            {
+                UseDefaultCredentials = true
+            };
+            var discoveryService = new ServerDiscoveryService(new HttpClient(handler));
             var sourceLogEnumerator = new SourceLogEnumerator();
             var checkpointStore = new CheckpointStore(settings?.StateDirectory ?? "data\\state");
             var checkpointManager = new CheckpointManager();
             var ndjsonLogReader = new NdjsonLogReader();
+            var fileReadRetryHandler = new FileReadRetryHandler();
             var errorNormalizer = new ErrorNormalizer();
             var deduplicationStore = new DeduplicationStore(settings?.StateDirectory ?? "data\\state");
             var outputWriter = new OutputWriter();
@@ -32,6 +39,10 @@ namespace NdjsonErrorCollector
             {
                 var locations = discoveryService.DiscoverAsync(settings?.ServersApiUrl).GetAwaiter().GetResult();
                 diagnostics.Info($"Discovered {locations.Count} log folder candidates.");
+                foreach (var location in locations)
+                {
+                    diagnostics.Info($"Available log folder: {location.LogFolderPath}");
+                }
                 var sourceFiles = sourceLogEnumerator.Enumerate(locations, settings?.LogFilePattern, diagnostics);
                 diagnostics.Info($"Discovered {sourceFiles.Count} source log files.");
                 var checkpoints = checkpointStore.Load();
@@ -42,22 +53,49 @@ namespace NdjsonErrorCollector
 
                 foreach (var sourceFile in sourceFiles)
                 {
-                    checkpoints.TryGetValue(sourceFile.FilePath, out var checkpoint);
-                    var preparedCheckpoint = checkpointManager.Prepare(sourceFile.FilePath, checkpoint, diagnostics);
-                    checkpoints[sourceFile.FilePath] = preparedCheckpoint;
-                    var newErrors = ndjsonLogReader.ReadNewErrors(sourceFile.FilePath, preparedCheckpoint, settings?.ErrorChannel, diagnostics);
-                    diagnostics.Info($"{sourceFile.FilePath}: read {newErrors.Count} new error records.");
-
-                    foreach (var newError in newErrors)
+                    try
                     {
-                        var normalized = errorNormalizer.Normalize(newError);
-                        if (deduplicationState.ExportedKeys.Add(normalized.Key))
+                        currentFilePath = sourceFile.FilePath;
+                        currentFolderPath = sourceFile.FolderPath;
+                        diagnostics.Info($"Processing source file: {currentFilePath}");
+                        checkpoints.TryGetValue(sourceFile.FilePath, out var checkpoint);
+                        var preparedCheckpoint = checkpointManager.Prepare(sourceFile.FilePath, checkpoint, diagnostics);
+                        checkpoints[sourceFile.FilePath] = preparedCheckpoint;
+
+                        if (!checkpointManager.ShouldScan(preparedCheckpoint))
                         {
-                            newUniqueErrors.Add(normalized);
-                            deduplicationState.PendingNotifications[normalized.Key] = normalized;
+                            diagnostics.Info($"{sourceFile.FilePath}: skipped because file is unchanged since last run.");
+                            checkpointStore.Save(checkpoints);
+                            continue;
                         }
+
+                        var newErrors = fileReadRetryHandler.Execute(
+                            sourceFile.FilePath,
+                            () => ndjsonLogReader.ReadNewErrors(sourceFile.FilePath, preparedCheckpoint, settings?.ErrorChannel, diagnostics),
+                            diagnostics);
+                        diagnostics.Info($"{sourceFile.FilePath}: read {newErrors.Count} new error records.");
+
+                        foreach (var newError in newErrors)
+                        {
+                            var normalized = errorNormalizer.Normalize(newError);
+                            if (deduplicationState.ExportedKeys.Add(normalized.Key))
+                            {
+                                newUniqueErrors.Add(normalized);
+                                deduplicationState.PendingNotifications[normalized.Key] = normalized;
+                            }
+                        }
+
+                        checkpointStore.Save(checkpoints);
+                        deduplicationStore.Save(deduplicationState);
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        diagnostics.Warning($"Access denied while processing source file {sourceFile.FilePath} in folder {sourceFile.FolderPath}: {ex.Message}. Skipping file.");
                     }
                 }
+
+                currentFilePath = null;
+                currentFolderPath = null;
 
                 outputWriter.Append(settings?.OutputNdjsonPath, newUniqueErrors);
                 diagnostics.Info($"Appended {newUniqueErrors.Count} unique errors to output.");
@@ -79,7 +117,10 @@ namespace NdjsonErrorCollector
             }
             catch (Exception ex)
             {
-                diagnostics.Error($"Collector run failed: {ex.Message}");
+                var failureContext = string.IsNullOrWhiteSpace(currentFilePath)
+                    ? string.Empty
+                    : $" Last file: {currentFilePath}. Folder: {currentFolderPath}.";
+                diagnostics.Error($"Collector run failed ({ex.GetType().FullName}): {ex.Message}.{failureContext}");
                 return 1;
             }
 
@@ -113,9 +154,17 @@ namespace NdjsonErrorCollector
 
     class EmailOptions
     {
-        public string From { get; set; }
+        public string Host { get; set; }
 
-        public string To { get; set; }
+        public int Port { get; set; }
+
+        public string FromAddress { get; set; }
+
+        public string[] To { get; set; }
+
+        public string[] Cc { get; set; }
+
+        public bool UseSsl { get; set; }
 
         public string SubjectPrefix { get; set; }
 

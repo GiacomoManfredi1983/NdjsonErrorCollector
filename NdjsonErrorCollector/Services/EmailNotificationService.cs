@@ -1,8 +1,9 @@
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net.Mail;
 using System.Text;
+using MailKit.Net.Smtp;
+using MimeKit;
 using NdjsonErrorCollector.Models;
 
 namespace NdjsonErrorCollector.Services
@@ -11,28 +12,34 @@ namespace NdjsonErrorCollector.Services
     {
         public void SendSummary(EmailOptions emailOptions, IReadOnlyCollection<NormalizedErrorRecord> records)
         {
-            if (emailOptions == null || records == null || records.Count == 0)
+            if (emailOptions == null || records == null || records.Count == 0 || string.IsNullOrWhiteSpace(emailOptions.Host) || string.IsNullOrWhiteSpace(emailOptions.FromAddress) || emailOptions.To == null || emailOptions.To.Length == 0)
             {
                 return;
             }
 
-            Directory.CreateDirectory(emailOptions.PickupDirectory);
+            var message = new MimeMessage();
+            message.From.Add(MailboxAddress.Parse(emailOptions.FromAddress));
 
-            using var message = new MailMessage(emailOptions.From, emailOptions.To)
+            foreach (var recipient in emailOptions.To.Where(address => !string.IsNullOrWhiteSpace(address)))
             {
-                Subject = $"{emailOptions.SubjectPrefix} {records.Count} new errors detected",
-                Body = BuildBody(records),
-                BodyEncoding = Encoding.UTF8,
-                SubjectEncoding = Encoding.UTF8
+                message.To.Add(MailboxAddress.Parse(recipient));
+            }
+
+            foreach (var recipient in (emailOptions.Cc ?? new string[0]).Where(address => !string.IsNullOrWhiteSpace(address)))
+            {
+                message.Cc.Add(MailboxAddress.Parse(recipient));
+            }
+
+            message.Subject = $"{emailOptions.SubjectPrefix} {records.Count} new errors detected";
+            message.Body = new TextPart("plain")
+            {
+                Text = BuildBody(records)
             };
 
-            using var client = new SmtpClient
-            {
-                DeliveryMethod = SmtpDeliveryMethod.SpecifiedPickupDirectory,
-                PickupDirectoryLocation = emailOptions.PickupDirectory
-            };
-
+            using var client = new MailKit.Net.Smtp.SmtpClient();
+            client.Connect(emailOptions.Host, emailOptions.Port, emailOptions.UseSsl);
             client.Send(message);
+            client.Disconnect(true);
         }
 
         private static string BuildBody(IEnumerable<NormalizedErrorRecord> records)

@@ -22,7 +22,7 @@ namespace NdjsonErrorCollector.Services
                 Description = NormalizeWhitespace(record.Entry.Description),
                 Caller = record.Entry.Caller,
                 Command = record.Entry.CommandInfo?.Command,
-                Arguments = record.Entry.CommandInfo?.Argument.ValueKind == JsonValueKind.Undefined ? null : record.Entry.CommandInfo.Argument.GetRawText(),
+                Arguments = GetArguments(record.Entry.CommandInfo),
                 Stack = record.Entry.Stack == null ? null : string.Join("|", record.Entry.Stack)
             };
 
@@ -51,6 +51,16 @@ namespace NdjsonErrorCollector.Services
         private static string NormalizeWhitespace(string value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : string.Join(" ", value.Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        private static string GetArguments(CommandInfo commandInfo)
+        {
+            if (commandInfo == null || commandInfo.Argument.ValueKind == JsonValueKind.Undefined)
+            {
+                return null;
+            }
+
+            return commandInfo.Argument.GetRawText();
         }
     }
 }
