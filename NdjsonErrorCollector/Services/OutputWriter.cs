@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using NdjsonErrorCollector;
 using NdjsonErrorCollector.Models;
 
 namespace NdjsonErrorCollector.Services
@@ -20,7 +21,7 @@ namespace NdjsonErrorCollector.Services
             using var writer = new StreamWriter(stream, Encoding.UTF8);
             foreach (var record in records)
             {
-                writer.WriteLine(JsonSerializer.Serialize(record));
+                writer.WriteLine(JsonSerializer.Serialize(record, AppJsonSerializerContext.Default.NormalizedErrorRecord));
             }
         }
     }

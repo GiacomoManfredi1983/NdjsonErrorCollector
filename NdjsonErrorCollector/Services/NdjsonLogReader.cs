@@ -1,9 +1,9 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using NdjsonErrorCollector;
 using NdjsonErrorCollector.Models;
 
 namespace NdjsonErrorCollector.Services
@@ -34,7 +34,7 @@ namespace NdjsonErrorCollector.Services
 
                 try
                 {
-                    var entry = JsonSerializer.Deserialize<RawLogEntry>(line);
+                    var entry = JsonSerializer.Deserialize(line, AppJsonSerializerContext.Default.RawLogEntry);
                     if (entry != null && string.Equals(entry.Channel, errorChannel, StringComparison.OrdinalIgnoreCase))
                     {
                         results.Add(new ParsedLogRecord
