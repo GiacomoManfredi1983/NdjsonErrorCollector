@@ -10,7 +10,7 @@ namespace NdjsonErrorCollector.Services
 {
     class NdjsonLogReader
     {
-        public IReadOnlyList<ParsedLogRecord> ReadNewErrors(string filePath, FileCheckpoint checkpoint, string errorChannel, RunDiagnostics diagnostics)
+        public IReadOnlyList<ParsedLogRecord> ReadNewErrors(string filePath, string installation, string group, FileCheckpoint checkpoint, string errorChannel, RunDiagnostics diagnostics)
         {
             var results = new List<ParsedLogRecord>();
             if (checkpoint == null || !File.Exists(filePath))
@@ -39,6 +39,8 @@ namespace NdjsonErrorCollector.Services
                     {
                         results.Add(new ParsedLogRecord
                         {
+                            Installation = installation,
+                            Group = group,
                             SourceFilePath = filePath,
                             TimestampUtc = ParseTimestamp(entry.TimestampParts),
                             Entry = entry

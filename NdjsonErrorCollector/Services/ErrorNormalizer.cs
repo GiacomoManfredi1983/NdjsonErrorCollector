@@ -13,6 +13,8 @@ namespace NdjsonErrorCollector.Services
         {
             var normalized = new NormalizedErrorRecord
             {
+                Installation = record.Installation,
+                Group = record.Group,
                 Source = record.SourceFilePath,
                 Timestamp = record.TimestampUtc == DateTime.MinValue ? null : record.TimestampUtc.ToString("O"),
                 ServiceId = record.Entry.ServiceID,

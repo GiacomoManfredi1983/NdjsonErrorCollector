@@ -33,11 +33,23 @@ namespace NdjsonErrorCollector.Services
             {
                 case JsonValueKind.Object:
                     string dbPath = null;
+                    string group = null;
+                    string installation = null;
                     foreach (var property in element.EnumerateObject())
                     {
                         if (string.Equals(property.Name, "db", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.String)
                         {
                             dbPath = property.Value.GetString();
+                        }
+
+                        if (string.Equals(property.Name, "group", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.String)
+                        {
+                            group = property.Value.GetString();
+                        }
+
+                        if (string.Equals(property.Name, "name", StringComparison.OrdinalIgnoreCase) && property.Value.ValueKind == JsonValueKind.String)
+                        {
+                            installation = property.Value.GetString();
                         }
 
                         ExtractDatabasePaths(property.Value, locations);
@@ -47,6 +59,8 @@ namespace NdjsonErrorCollector.Services
                     {
                         locations.Add(new ServerLogLocation
                         {
+                            Installation = installation,
+                            Group = group,
                             DatabasePath = dbPath,
                             LogFolderPath = DeriveLogFolder(dbPath)
                         });

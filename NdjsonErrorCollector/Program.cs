@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using Microsoft.Extensions.Configuration;
 using NdjsonErrorCollector.Services;
@@ -25,9 +27,14 @@ namespace NdjsonErrorCollector
             var sourceLogEnumerator = new SourceLogEnumerator();
             var checkpointStore = new CheckpointStore(settings?.StateDirectory ?? "data\\state");
             var checkpointManager = new CheckpointManager();
+            var checkpointPruner = new CheckpointPruner();
             var ndjsonLogReader = new NdjsonLogReader();
             var fileReadRetryHandler = new FileReadRetryHandler();
+            var errorThresholdFilter = new ErrorThresholdFilter();
             var errorNormalizer = new ErrorNormalizer();
+            var reportingWindowAggregator = new ReportingWindowAggregator();
+            var reportingDeliveryCoordinator = new ReportingDeliveryCoordinator();
+            var configurationWarningCollector = new ConfigurationWarningCollector();
             var deduplicationStore = new DeduplicationStore(settings?.StateDirectory ?? "data\\state");
             var outputWriter = new OutputWriter();
             var emailNotificationService = new EmailNotificationService();
@@ -39,55 +46,129 @@ namespace NdjsonErrorCollector
 
             try
             {
+                var thresholdsUtc = ParseGroupThresholds(settings?.GroupThresholds);
+                var runCutoffUtc = DateTime.UtcNow;
                 var locations = discoveryService.DiscoverAsync(settings?.ServersApiUrl).GetAwaiter().GetResult();
                 diagnostics.Info($"Discovered {locations.Count} log folder candidates.");
                 foreach (var location in locations)
                 {
-                    diagnostics.Info($"Available log folder: {location.LogFolderPath}");
+                    diagnostics.Info($"Available log folder for installation {location.Installation ?? "<missing>"}, group {location.Group ?? "<missing>"}: {location.LogFolderPath}");
                 }
-                var sourceFiles = sourceLogEnumerator.Enumerate(locations, settings?.LogFilePattern, diagnostics);
-                diagnostics.Info($"Discovered {sourceFiles.Count} source log files.");
-                var checkpoints = checkpointStore.Load();
-                diagnostics.Info($"Loaded {checkpoints.Count} file checkpoints.");
+                var checkpointState = checkpointStore.Load();
                 var deduplicationState = deduplicationStore.Load();
-                diagnostics.Info($"Loaded {deduplicationState.ExportedKeys.Count} exported keys and {deduplicationState.NotifiedKeys.Count} notified keys.");
-                var newUniqueErrors = new List<Models.NormalizedErrorRecord>();
+                if (!string.IsNullOrWhiteSpace(checkpointStore.LegacyBackupPath))
+                {
+                    diagnostics.Warning($"Legacy checkpoint state was backed up to {checkpointStore.LegacyBackupPath} and reset for group-aware processing.");
+                }
+                if (!string.IsNullOrWhiteSpace(deduplicationStore.LegacyBackupPath))
+                {
+                    diagnostics.Warning($"Legacy deduplication state was backed up to {deduplicationStore.LegacyBackupPath} and reset for group-aware processing.");
+                }
+
+                configurationWarningCollector.Collect(locations, thresholdsUtc, deduplicationState, diagnostics);
+
+                diagnostics.Info($"Loaded {checkpointState.Groups.Sum(group => group.Value.Files.Count)} file checkpoints across {checkpointState.Groups.Count} groups.");
+                diagnostics.Info($"Loaded {deduplicationState.Groups.Sum(group => group.Value.PendingRecords.Count)} pending records across {deduplicationState.Groups.Count} groups.");
+
+                var rolloverService = new GroupRolloverService();
+                var rolledOverGroups = rolloverService.Prepare(checkpointState, deduplicationState, thresholdsUtc, diagnostics);
+                var windowStartsUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+                var includeWindowStart = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+                foreach (var threshold in thresholdsUtc)
+                {
+                    var reportingState = deduplicationState.Groups[threshold.Key];
+                    var hasSuccessfulSend = TryParseUtc(reportingState.LastSuccessfulSendUtc, out var lastSuccessfulSendUtc);
+                    windowStartsUtc[threshold.Key] = hasSuccessfulSend ? lastSuccessfulSendUtc : threshold.Value;
+                    includeWindowStart[threshold.Key] = !hasSuccessfulSend;
+                    PromoteDeferredRecords(
+                        reportingState,
+                        windowStartsUtc[threshold.Key],
+                        runCutoffUtc,
+                        includeWindowStart[threshold.Key],
+                        reportingWindowAggregator,
+                        diagnostics);
+                }
+
+                checkpointPruner.Prune(checkpointState, windowStartsUtc, diagnostics);
+                outputWriter.RemoveGroups(settings?.OutputNdjsonPath, rolledOverGroups);
+                if (!string.IsNullOrWhiteSpace(outputWriter.LegacyBackupPath))
+                {
+                    diagnostics.Warning($"Legacy ungrouped output was backed up to {outputWriter.LegacyBackupPath} and reset.");
+                }
+                checkpointStore.Save(checkpointState);
+                deduplicationStore.Save(deduplicationState);
+
+                var sourceFiles = sourceLogEnumerator.Enumerate(locations, settings?.LogFilePattern, windowStartsUtc, diagnostics);
+                diagnostics.Info($"Discovered {sourceFiles.Count} reporting-window-eligible source log files.");
 
                 foreach (var sourceFile in sourceFiles)
                 {
+                    if (string.IsNullOrWhiteSpace(sourceFile.Group))
+                    {
+                        diagnostics.Warning($"Skipping source file without an installation group: {sourceFile.FilePath}");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(sourceFile.Installation))
+                    {
+                        diagnostics.Warning($"Skipping source file without an installation name: {sourceFile.FilePath}");
+                        continue;
+                    }
+
+                    if (!windowStartsUtc.TryGetValue(sourceFile.Group, out var windowStartUtc))
+                    {
+                        diagnostics.Warning($"Skipping source file for unconfigured group {sourceFile.Group}: {sourceFile.FilePath}");
+                        continue;
+                    }
+
+                    var groupCheckpoints = checkpointState.Groups[sourceFile.Group];
+                    var groupReportingState = deduplicationState.Groups[sourceFile.Group];
                     try
                     {
                         currentFilePath = sourceFile.FilePath;
                         currentFolderPath = sourceFile.FolderPath;
-                        diagnostics.Info($"Processing source file: {currentFilePath}");
-                        checkpoints.TryGetValue(sourceFile.FilePath, out var checkpoint);
+                        diagnostics.Info($"Processing source file for installation {sourceFile.Installation}, group {sourceFile.Group}: {currentFilePath}");
+                        groupCheckpoints.Files.TryGetValue(sourceFile.FilePath, out var checkpoint);
                         var preparedCheckpoint = checkpointManager.Prepare(sourceFile.FilePath, checkpoint, diagnostics);
-                        checkpoints[sourceFile.FilePath] = preparedCheckpoint;
+                        groupCheckpoints.Files[sourceFile.FilePath] = preparedCheckpoint;
 
                         if (!checkpointManager.ShouldScan(preparedCheckpoint))
                         {
                             diagnostics.Info($"{sourceFile.FilePath}: skipped because file is unchanged since last run.");
-                            checkpointStore.Save(checkpoints);
+                            checkpointStore.Save(checkpointState);
                             continue;
                         }
 
                         var newErrors = fileReadRetryHandler.Execute(
                             sourceFile.FilePath,
-                            () => ndjsonLogReader.ReadNewErrors(sourceFile.FilePath, preparedCheckpoint, settings?.ErrorChannel, diagnostics),
+                            () => ndjsonLogReader.ReadNewErrors(sourceFile.FilePath, sourceFile.Installation, sourceFile.Group, preparedCheckpoint, settings?.ErrorChannel, diagnostics),
                             diagnostics);
                         diagnostics.Info($"{sourceFile.FilePath}: read {newErrors.Count} new error records.");
 
                         foreach (var newError in newErrors)
                         {
-                            var normalized = errorNormalizer.Normalize(newError);
-                            if (deduplicationState.ExportedKeys.Add(normalized.Key))
+                            var disposition = errorThresholdFilter.Classify(
+                                newError,
+                                windowStartUtc,
+                                runCutoffUtc,
+                                includeWindowStart[sourceFile.Group],
+                                diagnostics);
+                            if (disposition == ReportingWindowDisposition.BeforeWindow || disposition == ReportingWindowDisposition.InvalidTimestamp)
                             {
-                                newUniqueErrors.Add(normalized);
-                                deduplicationState.PendingNotifications[normalized.Key] = normalized;
+                                continue;
                             }
+
+                            var normalized = errorNormalizer.Normalize(newError);
+                            if (disposition == ReportingWindowDisposition.AfterWindow)
+                            {
+                                groupReportingState.DeferredRecords.Add(normalized);
+                                continue;
+                            }
+
+                            reportingWindowAggregator.TryAdd(groupReportingState, normalized, windowStartUtc, runCutoffUtc, diagnostics);
                         }
 
-                        checkpointStore.Save(checkpoints);
+                        checkpointStore.Save(checkpointState);
                         deduplicationStore.Save(deduplicationState);
                     }
                     catch (UnauthorizedAccessException ex)
@@ -99,22 +180,44 @@ namespace NdjsonErrorCollector
                 currentFilePath = null;
                 currentFolderPath = null;
 
-                outputWriter.Append(settings?.OutputNdjsonPath, newUniqueErrors);
-                diagnostics.Info($"Appended {newUniqueErrors.Count} unique errors to output.");
-
-                if (deduplicationState.PendingNotifications.Count > 0)
+                foreach (var group in deduplicationState.Groups.Values)
                 {
-                    emailNotificationService.SendSummary(settings?.Email, new List<Models.NormalizedErrorRecord>(deduplicationState.PendingNotifications.Values));
-                    foreach (var key in new List<string>(deduplicationState.PendingNotifications.Keys))
+                    group.PendingThroughUtc = runCutoffUtc.ToString("O");
+                    foreach (var record in group.PendingRecords.Values)
                     {
-                        deduplicationState.NotifiedKeys.Add(key);
-                        deduplicationState.PendingNotifications.Remove(key);
+                        record.WindowEndUtc = group.PendingThroughUtc;
                     }
-
-                    diagnostics.Info("Summary notification queued.");
                 }
 
-                checkpointStore.Save(checkpoints);
+                checkpointStore.Save(checkpointState);
+                deduplicationStore.Save(deduplicationState);
+
+                var pendingNotifications = deduplicationState.Groups.Values
+                    .SelectMany(group => group.PendingRecords.Values)
+                    .ToList();
+                var pendingWarnings = deduplicationState.PendingWarnings.Values.ToList();
+                if (pendingNotifications.Count > 0 || pendingWarnings.Count > 0)
+                {
+                    if (emailNotificationService.SendSummary(settings?.Email, pendingNotifications, pendingWarnings))
+                    {
+                        if (pendingNotifications.Count > 0)
+                        {
+                            outputWriter.Append(settings?.OutputNdjsonPath, pendingNotifications);
+                            diagnostics.Info($"Appended {pendingNotifications.Count} delivered daily errors to output.");
+                        }
+
+                        reportingDeliveryCoordinator.CompleteSuccessfulDelivery(deduplicationState, runCutoffUtc);
+
+                        deduplicationStore.Save(deduplicationState);
+                        diagnostics.Info("Daily summary notification sent; reporting windows advanced.");
+                    }
+                    else
+                    {
+                        diagnostics.Warning("Daily summary was not sent because email configuration is incomplete; pending records were retained.");
+                    }
+                }
+
+                checkpointStore.Save(checkpointState);
                 deduplicationStore.Save(deduplicationState);
             }
             catch (Exception ex)
@@ -127,6 +230,74 @@ namespace NdjsonErrorCollector
             }
 
             return 0;
+        }
+
+        private static void PromoteDeferredRecords(
+            Models.GroupReportingState reportingState,
+            DateTime windowStartUtc,
+            DateTime windowEndUtc,
+            bool includeWindowStart,
+            ReportingWindowAggregator aggregator,
+            RunDiagnostics diagnostics)
+        {
+            var stillDeferred = new List<Models.NormalizedErrorRecord>();
+            foreach (var record in reportingState.DeferredRecords)
+            {
+                if (!TryParseUtc(record.Timestamp, out var timestampUtc))
+                {
+                    continue;
+                }
+
+                if (timestampUtc > windowEndUtc)
+                {
+                    stillDeferred.Add(record);
+                    continue;
+                }
+
+                if (timestampUtc < windowStartUtc || (!includeWindowStart && timestampUtc == windowStartUtc))
+                {
+                    continue;
+                }
+
+                aggregator.TryAdd(reportingState, record, windowStartUtc, windowEndUtc, diagnostics);
+            }
+
+            reportingState.DeferredRecords = stillDeferred;
+        }
+
+        private static bool TryParseUtc(string value, out DateTime valueUtc)
+        {
+            if (DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+            {
+                valueUtc = parsed.UtcDateTime;
+                return true;
+            }
+
+            valueUtc = default;
+            return false;
+        }
+
+        private static IReadOnlyDictionary<string, DateTime> ParseGroupThresholds(IDictionary<string, string> configuredThresholds)
+        {
+            if (configuredThresholds == null || configuredThresholds.Count == 0)
+            {
+                throw new InvalidOperationException("Collector.GroupThresholds must contain at least one installation group.");
+            }
+
+            var thresholdsUtc = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            foreach (var configuredThreshold in configuredThresholds)
+            {
+                if (string.IsNullOrWhiteSpace(configuredThreshold.Key)
+                    || !DateTimeOffset.TryParse(configuredThreshold.Value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsedThreshold)
+                    || parsedThreshold.Offset != TimeSpan.Zero)
+                {
+                    throw new InvalidOperationException($"Collector.GroupThresholds.{configuredThreshold.Key} must be an ISO 8601 UTC timestamp, for example 2026-03-15T14:30:00Z.");
+                }
+
+                thresholdsUtc[configuredThreshold.Key] = parsedThreshold.UtcDateTime;
+            }
+
+            return thresholdsUtc;
         }
 
         private static IConfiguration BuildConfiguration(string releaseRoot)
@@ -198,6 +369,8 @@ namespace NdjsonErrorCollector
         public string StateDirectory { get; set; }
 
         public string ErrorChannel { get; set; }
+
+        public Dictionary<string, string> GroupThresholds { get; set; }
 
         public EmailOptions Email { get; set; }
     }

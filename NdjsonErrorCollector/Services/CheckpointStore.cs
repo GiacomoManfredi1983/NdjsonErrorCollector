@@ -10,39 +10,54 @@ namespace NdjsonErrorCollector.Services
     {
         private readonly string _checkpointFilePath;
 
+        public string LegacyBackupPath { get; private set; }
+
         public CheckpointStore(string stateDirectory)
         {
             Directory.CreateDirectory(stateDirectory);
             _checkpointFilePath = Path.Combine(stateDirectory, "checkpoints.json");
         }
 
-        public IDictionary<string, FileCheckpoint> Load()
+        public CheckpointState Load()
         {
             if (!File.Exists(_checkpointFilePath))
             {
-                return new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+                return new CheckpointState();
             }
 
             var json = File.ReadAllText(_checkpointFilePath);
             if (string.IsNullOrWhiteSpace(json))
             {
-                return new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+                return new CheckpointState();
             }
 
             try
             {
-                var checkpoints = JsonSerializer.Deserialize<Dictionary<string, FileCheckpoint>>(json);
-                return checkpoints ?? new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+                using var document = JsonDocument.Parse(json);
+                if (!document.RootElement.TryGetProperty("Groups", out _))
+                {
+                    BackupLegacyState();
+                    return new CheckpointState();
+                }
+
+                var state = JsonSerializer.Deserialize<CheckpointState>(json) ?? new CheckpointState();
+                state.Groups = new Dictionary<string, GroupCheckpointState>(state.Groups ?? new Dictionary<string, GroupCheckpointState>(), StringComparer.OrdinalIgnoreCase);
+                foreach (var group in state.Groups.Values)
+                {
+                    group.Files = new Dictionary<string, FileCheckpoint>(group.Files ?? new Dictionary<string, FileCheckpoint>(), StringComparer.OrdinalIgnoreCase);
+                }
+
+                return state;
             }
             catch (JsonException)
             {
-                return new Dictionary<string, FileCheckpoint>(StringComparer.OrdinalIgnoreCase);
+                return new CheckpointState();
             }
         }
 
-        public void Save(IDictionary<string, FileCheckpoint> checkpoints)
+        public void Save(CheckpointState state)
         {
-            var json = JsonSerializer.Serialize(checkpoints, new JsonSerializerOptions
+            var json = JsonSerializer.Serialize(state, new JsonSerializerOptions
             {
                 WriteIndented = true
             });
@@ -50,6 +65,12 @@ namespace NdjsonErrorCollector.Services
             var tempFilePath = _checkpointFilePath + ".tmp";
             File.WriteAllText(tempFilePath, json);
             File.Move(tempFilePath, _checkpointFilePath, overwrite: true);
+        }
+
+        private void BackupLegacyState()
+        {
+            LegacyBackupPath = _checkpointFilePath + ".legacy.bak";
+            File.Copy(_checkpointFilePath, LegacyBackupPath, overwrite: true);
         }
     }
 }

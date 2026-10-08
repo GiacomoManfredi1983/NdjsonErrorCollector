@@ -4,6 +4,10 @@ namespace NdjsonErrorCollector.Models
 {
     class ParsedLogRecord
     {
+        public string Installation { get; set; }
+
+        public string Group { get; set; }
+
         public string SourceFilePath { get; set; }
 
         public DateTime TimestampUtc { get; set; }

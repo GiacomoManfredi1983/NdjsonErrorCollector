@@ -4,6 +4,14 @@ namespace NdjsonErrorCollector.Models
     {
         public string Key { get; set; }
 
+        public string Installation { get; set; }
+
+        public string Group { get; set; }
+
+        public string WindowStartUtc { get; set; }
+
+        public string WindowEndUtc { get; set; }
+
         public string Source { get; set; }
 
         public string Timestamp { get; set; }
